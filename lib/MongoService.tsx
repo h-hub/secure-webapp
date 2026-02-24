@@ -2,6 +2,7 @@ import { ObjectId, UpdateResult, WithId } from "mongodb";
 import client from "@/lib/mongodb";
 import User from "@/model/user";
 import { RefreshToken } from "@/model/refreshToken";
+import { Session } from "@/model/session";
 
 class MongoService {
   private async getDb() {
@@ -57,6 +58,32 @@ class MongoService {
     const db = await this.getDb();
     const refreshTokens = db.collection<RefreshToken>("RefreshTokens");
     return refreshTokens.findOne({ userId });
+  }
+
+  /**
+   * Save a new session for a given user.
+   */
+  async saveSession(
+    userId: ObjectId,
+    userAgent: string,
+    ipAddress: string,
+    csrfToken: string,
+    expiresInMs: number = 1000 * 60 * 60 * 24, // 1 day
+  ): Promise<ObjectId> {
+    const db = await this.getDb();
+    const sessions = db.collection<Session>("Sessions");
+
+    const result = await sessions.insertOne({
+      userId,
+      userAgent,
+      ipAddress,
+      csrfToken,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + expiresInMs),
+      revoked: false,
+    });
+
+    return result.insertedId;
   }
 }
 

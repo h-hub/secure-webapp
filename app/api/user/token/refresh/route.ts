@@ -41,7 +41,7 @@ export async function GET(req: Request) {
 
     // Generate new JWT
     const newToken = jwt.sign({ id: doc.userId }, JWT_SECRET, {
-      expiresIn: "1m",
+      expiresIn: "1h",
     });
 
     const response = NextResponse.json({ success: true });
@@ -50,7 +50,7 @@ export async function GET(req: Request) {
       secure: true,
       sameSite: "strict",
       path: "/",
-      maxAge: 60 * 1, // 1 minute
+      maxAge: 60 * 60 * 1, // 1 minute
     });
 
     return response;

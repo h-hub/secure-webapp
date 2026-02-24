@@ -32,16 +32,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, {
-      expiresIn: "1m",
-    });
-
-    const refreshToken = jwt.sign(
-      { id: user._id, email: user.email, type: "refresh" },
-      JWT_SECRET,
-      { expiresIn: "7d" },
-    );
-
     // Collect user-agent and IP from the request
     const userAgent = req.headers.get("user-agent") || "unknown";
     const ipAddress =
@@ -49,15 +39,35 @@ export async function POST(req: NextRequest) {
       req.headers.get("x-real-ip") ||
       "unknown";
 
+    // Save a new session and get the session ID
+    const newCsrfToken = generateCsrfToken();
+
+    const sessionId = await mongoService.saveSession(
+      user._id,
+      userAgent,
+      ipAddress,
+      newCsrfToken
+    );
+
+    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, {
+      expiresIn: "1d",
+    });
+
+    const refreshToken = jwt.sign(
+      { id: user._id, email: user.email, type: "refresh", sessionId },
+      JWT_SECRET,
+      { expiresIn: "7d" },
+    );
+
     await mongoService.upsertRefreshToken(
       user._id,
       refreshToken,
       userAgent,
-      ipAddress,
+      ipAddress
     );
 
     // Generate a new CSRF token for the authenticated session
-    const newCsrfToken = generateCsrfToken();
+    
 
     const response = NextResponse.json({
       success: true,
