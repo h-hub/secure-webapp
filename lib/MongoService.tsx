@@ -20,6 +20,15 @@ class MongoService {
   }
 
   /**
+   * Find a user by ObjectId.
+   */
+  async findUserById(userId: ObjectId): Promise<WithId<User> | null> {
+    const db = await this.getDb();
+    const users = db.collection<User>("Users");
+    return users.findOne({ _id: userId });
+  }
+
+  /**
    * Upsert a refresh token for a given user, user-agent, and IP address.
    * If a matching document exists, it is updated; otherwise, a new one is inserted.
    */
@@ -84,6 +93,60 @@ class MongoService {
     });
 
     return result.insertedId;
+  }
+
+  /**
+   * Find a session by its ObjectId.
+   */
+  async getSessionById(sessionId: ObjectId): Promise<WithId<Session> | null> {
+    const db = await this.getDb();
+    const sessions = db.collection<Session>("Sessions");
+    return sessions.findOne({ _id: sessionId });
+  }
+
+  /**
+   * Update the CSRF token for a session by its ObjectId.
+   */
+  async updateCsrfTokenBySessionId(
+    sessionId: ObjectId,
+    newCsrfToken: string,
+  ): Promise<string> {
+    const db = await this.getDb();
+    const sessions = db.collection<Session>("Sessions");
+    const updateResult = await sessions.updateOne(
+      { _id: sessionId },
+      { $set: { csrfToken: newCsrfToken } },
+    );
+    if (updateResult.modifiedCount > 0) {
+      return newCsrfToken;
+    }
+    throw new Error("Failed to update CSRF token for session");
+  }
+
+  /**
+   * Revoke a session by userId, userAgent, ipAddress, csrfToken.
+   */
+  async revokeSession(
+    userId: ObjectId,
+    userAgent: string,
+    ipAddress: string,
+  ): Promise<UpdateResult> {
+    const db = await this.getDb();
+    const sessions = db.collection<Session>("Sessions");
+    return sessions.updateOne(
+      {
+        userId,
+        userAgent,
+        ipAddress,
+        revoked: false,
+      },
+      {
+        $set: {
+          revoked: true,
+          revokedAt: new Date(),
+        },
+      },
+    );
   }
 }
 

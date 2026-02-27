@@ -8,7 +8,7 @@ export default function SignInPage() {
   const [password, setPassword] = useState("");
   const [responseMsg, setResponseMsg] = useState<string | null>(null);
   const router = useRouter();
-  const { checkSession } = useSession();
+  const { checkSession, setCsrfToken } = useSession();
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -22,6 +22,9 @@ export default function SignInPage() {
       const data = await res.json();
       if (res.ok) {
         setResponseMsg("Sign-in successful!");
+        if (data.newCsrfToken) {
+          setCsrfToken(data.newCsrfToken);
+        }
         await checkSession();
         router.push("/home");
       } else {

@@ -4,6 +4,7 @@ import { useSession } from "@/lib/SessionContext";
 
 export default function HomePage() {
   const [username, setUsername] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [refreshResult, setRefreshResult] = useState<string | null>(null);
   const [sessionResult, setSessionResult] = useState<string | null>(null);
   const {
@@ -13,6 +14,7 @@ export default function HomePage() {
     signOut,
     refreshToken,
     fetchWithAuth,
+    csrfToken,
   } = useSession();
 
   const handleSignOut = async () => {
@@ -38,17 +40,29 @@ export default function HomePage() {
   useEffect(() => {
     const fetchUser = async () => {
       try {
-        const res = await fetchWithAuth("/api/user/profile");
+        setErrorMessage(null);
+        const headers: HeadersInit = {};
+        const storedCsrfToken =
+          typeof window !== "undefined"
+            ? localStorage.getItem("csrfToken")
+            : null;
+        if (storedCsrfToken) headers["x-csrf-token"] = storedCsrfToken;
+        const res = await fetch("/api/user/profile", { headers });
         if (res.ok) {
           const data = await res.json();
           setUsername(data.email);
+        } else {
+          const data = await res.json();
+          setErrorMessage(
+            data.message || data.error || "Failed to fetch user details",
+          );
         }
       } catch (err) {
-        // Optionally handle error
+        setErrorMessage("Failed to fetch user details");
       }
     };
     fetchUser();
-  }, [fetchWithAuth]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-white dark:bg-black">
@@ -72,6 +86,11 @@ export default function HomePage() {
             <p className="text-2xl font-semibold text-black dark:text-white mb-2 text-center">
               {username}
             </p>
+          )}
+          {errorMessage && (
+            <div className="text-sm text-center text-red-600 dark:text-red-400 font-semibold px-3 py-2 border border-red-400 dark:border-red-600 my-2">
+              {errorMessage}
+            </div>
           )}
           <p className="text-lg text-black dark:text-white text-center mb-6">
             Your secure React webapp starts here.

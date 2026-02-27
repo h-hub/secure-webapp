@@ -42,32 +42,46 @@ export async function POST(req: NextRequest) {
     // Save a new session and get the session ID
     const newCsrfToken = generateCsrfToken();
 
+    // Set session and JWT expiry in minutes
+    const sessionExpiryMinutes = parseInt(
+      process.env.SESSIONEXPIRY_MINUTES || "60",
+      10,
+    );
+    const sessionExpiryMs = sessionExpiryMinutes * 60 * 1000;
+
     const sessionId = await mongoService.saveSession(
       user._id,
       userAgent,
       ipAddress,
-      newCsrfToken
+      newCsrfToken,
+      sessionExpiryMs,
     );
 
-    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, {
-      expiresIn: "1d",
-    });
+    const token = jwt.sign(
+      { id: user._id, email: user.email, sid: sessionId },
+      JWT_SECRET,
+      {
+        expiresIn: `${sessionExpiryMinutes}m`,
+      },
+    );
+
+    const refreshTokenExpiryMinutes = parseInt(
+      process.env.REFRESH_TOKEN_EXPIRY_MINUTES || "10080", // 7 days in minutes
+      10,
+    );
 
     const refreshToken = jwt.sign(
       { id: user._id, email: user.email, type: "refresh", sessionId },
       JWT_SECRET,
-      { expiresIn: "7d" },
+      { expiresIn: `${refreshTokenExpiryMinutes}m` },
     );
 
     await mongoService.upsertRefreshToken(
       user._id,
       refreshToken,
       userAgent,
-      ipAddress
+      ipAddress,
     );
-
-    // Generate a new CSRF token for the authenticated session
-    
 
     const response = NextResponse.json({
       success: true,
@@ -78,14 +92,14 @@ export async function POST(req: NextRequest) {
       secure: true,
       sameSite: "strict",
       path: "/",
-      maxAge: 60 * 1, // 1 minute
+      maxAge: sessionExpiryMinutes * 60, // session expiry in seconds
     });
     response.cookies.set("refreshToken", refreshToken, {
       httpOnly: true,
       secure: true,
       sameSite: "strict",
       path: "/",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
+      maxAge: refreshTokenExpiryMinutes * 60, // refresh token expiry in seconds
     });
     return response;
   } catch (err) {

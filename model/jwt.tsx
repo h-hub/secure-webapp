@@ -1,6 +1,7 @@
 interface JWTPayload {
   id: string;
   email: string;
+  sid: string; // session ID
 }
 
 interface RefreshJWTPayload {

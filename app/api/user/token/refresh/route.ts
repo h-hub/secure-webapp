@@ -4,6 +4,8 @@ import jwt from "jsonwebtoken";
 import { getRefreshToken } from "@/lib/auth";
 import { RefreshJWTPayload } from "@/model/jwt";
 import { ObjectId } from "mongodb";
+import { generateCsrfToken } from "@/lib/csrf";
+import { use } from "react";
 
 const JWT_SECRET = process.env.JWT_SECRET || "";
 
@@ -22,39 +24,78 @@ export async function GET(req: Request) {
       JWT_SECRET,
     ) as RefreshJWTPayload;
 
-    const doc = await mongoService.findRefreshTokenByUserId(
+    const refreshToken = await mongoService.findRefreshTokenByUserId(
       new ObjectId(decoded.id),
     );
-    if (!doc) {
+    if (!refreshToken) {
       return NextResponse.json(
         { error: "Invalid refresh token" },
         { status: 401 },
       );
     }
 
-    if (doc.expiresAt && new Date(doc.expiresAt) < new Date()) {
+    if (
+      refreshToken.expiresAt &&
+      new Date(refreshToken.expiresAt) < new Date()
+    ) {
       return NextResponse.json(
         { error: "Refresh token expired" },
         { status: 401 },
       );
     }
 
-    // Generate new JWT
-    const newToken = jwt.sign({ id: doc.userId }, JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const user = await mongoService.findUserById(new ObjectId(decoded.id));
+    if (!user) {
+      return NextResponse.json({ error: "User not found" }, { status: 404 });
+    }
 
-    const response = NextResponse.json({ success: true });
+    const userAgent = req.headers.get("user-agent") || "unknown";
+    const ipAddress =
+      req.headers.get("x-forwarded-for")?.split(",")[0].trim() ||
+      req.headers.get("x-real-ip") ||
+      "unknown";
+
+    await mongoService.revokeSession(user._id, userAgent, ipAddress);
+
+    const newCsrfToken = generateCsrfToken();
+
+    // Set session and JWT expiry in minutes
+    const sessionExpiryMinutes = parseInt(
+      process.env.SESSIONEXPIRY_MINUTES || "60",
+      10,
+    );
+    const sessionExpiryMs = sessionExpiryMinutes * 60 * 1000;
+
+    const sessionId = await mongoService.saveSession(
+      user._id,
+      userAgent,
+      ipAddress,
+      newCsrfToken,
+      sessionExpiryMs,
+    );
+
+    const newToken = jwt.sign(
+      { id: user._id, email: user.email, sid: sessionId },
+      JWT_SECRET,
+      {
+        expiresIn: `${sessionExpiryMinutes}m`,
+      },
+    );
+
+    const response = NextResponse.json({ success: true, newCsrfToken });
     response.cookies.set("token", newToken, {
       httpOnly: true,
       secure: true,
       sameSite: "strict",
       path: "/",
-      maxAge: 60 * 60 * 1, // 1 minute
+      maxAge: sessionExpiryMinutes * 60, // session expiry in seconds
     });
 
     return response;
   } catch (err) {
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    console.error("[refresh token] Exception:", err);
+    throw err;
+    // Optionally, you can keep the error response below if you want to return JSON as well:
+    // return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }

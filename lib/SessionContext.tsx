@@ -13,6 +13,8 @@ interface SessionContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   expiresIn: number | null;
+  csrfToken: string | null;
+  setCsrfToken: (token: string | null) => void;
   checkSession: () => Promise<void>;
   signOut: () => Promise<void>;
   refreshToken: () => Promise<boolean>;
@@ -21,20 +23,30 @@ interface SessionContextType {
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
 
-const POLL_INTERVAL_MS = 5 * 60 * 1000; // Poll every 5 minutes
-const REFRESH_BUFFER_S = 10; // Refresh token 10 seconds before expiry
+const POLL_INTERVAL_S = 10; // 1 minute
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [expiresIn, setExpiresIn] = useState<number | null>(null);
+  const [csrfToken, setCsrfTokenState] = useState<string | null>(
+    typeof window !== "undefined" ? localStorage.getItem("csrfToken") : null,
+  );
   const router = useRouter();
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Deduplicated refresh — prevents multiple simultaneous refresh calls
   const isRefreshingRef = useRef(false);
   const refreshPromiseRef = useRef<Promise<boolean> | null>(null);
+
+  const setCsrfToken = useCallback((token: string | null) => {
+    setCsrfTokenState(token);
+    if (typeof window !== "undefined") {
+      if (token) {
+        localStorage.setItem("csrfToken", token);
+      } else {
+        localStorage.removeItem("csrfToken");
+      }
+    }
+  }, []);
 
   const refreshToken = useCallback(async (): Promise<boolean> => {
     // If a refresh is already in-flight, reuse the same promise
@@ -45,9 +57,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     isRefreshingRef.current = true;
     refreshPromiseRef.current = (async () => {
       try {
-        const res = await fetch("/api/user/token/refresh");
+        const res = await fetch("/api/user/token/refresh", { method: "GET" });
         if (res.ok) {
           setIsAuthenticated(true);
+          const data = await res.json();
+          if (data.newCsrfToken) {
+            setCsrfToken(data.newCsrfToken);
+          }
           return true;
         }
         setIsAuthenticated(false);
@@ -64,11 +80,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return refreshPromiseRef.current;
   }, []);
 
-  // Layer 3: Fetch wrapper — catches 401, refreshes, retries once
   const fetchWithAuth = useCallback(
     async (input: RequestInfo, init?: RequestInit): Promise<Response> => {
       const res = await fetch(input, init);
-
+      // const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null); // removed polling
       if (res.status === 401) {
         const refreshed = await refreshToken();
         if (refreshed) {
@@ -84,23 +99,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [refreshToken, router],
   );
 
-  // Schedule a proactive token refresh before the access token expires
-  const scheduleRefresh = useCallback(
-    (secondsRemaining: number) => {
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-      const delayMs = Math.max((secondsRemaining - REFRESH_BUFFER_S) * 1000, 0);
-      refreshTimerRef.current = setTimeout(async () => {
-        const success = await refreshToken();
-        if (!success) {
-          setIsAuthenticated(false);
-          router.push("/");
-        }
-      }, delayMs);
-    },
-    [refreshToken, router],
-  );
-
-  // Layer 1: Polling — session check returns expiresIn or error
   const checkSession = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -110,15 +108,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (res.ok && data.valid) {
         setIsAuthenticated(true);
         setExpiresIn(data.expiresIn ?? null);
-        if (data.expiresIn != null) {
-          scheduleRefresh(data.expiresIn);
-        }
       } else if (res.status === 401) {
-        // Access token expired/missing — try to refresh
+        console.log(
+          `Session invalid (401). expiresIn: ${expiresIn}, time: ${new Date().toLocaleString()}, attempting to refresh token...`,
+        );
         const refreshed = await refreshToken();
         if (refreshed) {
           setIsAuthenticated(true);
         } else {
+          console.log("Token refresh failed, session is dead.");
           setIsAuthenticated(false);
           setExpiresIn(null);
         }
@@ -132,7 +130,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [refreshToken, scheduleRefresh]);
+  }, [refreshToken]);
 
   const signOut = useCallback(async () => {
     try {
@@ -141,7 +139,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         setIsAuthenticated(false);
         setExpiresIn(null);
         if (intervalRef.current) clearInterval(intervalRef.current);
-        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
         router.push("/");
       }
     } catch {
@@ -150,10 +147,44 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   useEffect(() => {
-    checkSession();
+    if (!isAuthenticated) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      return;
+    }
 
-    // Layer 1: Poll every 5 minutes
-    intervalRef.current = setInterval(checkSession, POLL_INTERVAL_MS);
+    if (intervalRef.current) clearInterval(intervalRef.current);
+
+    intervalRef.current = setInterval(() => {
+      // Always check session
+
+      checkSession();
+      console.log(
+        `--- Polling session validity 1 | expiresIn: ${expiresIn} s | POLL_INTERVAL_S: ${POLL_INTERVAL_S} s | ${new Date().toLocaleString()} ---`,
+      );
+      // If token is expiring before the next interval, refresh proactively
+      if (expiresIn != null && expiresIn * 2 < POLL_INTERVAL_S) {
+        refreshToken();
+      }
+    }, POLL_INTERVAL_S * 1000);
+
+    // On mount, do the same logic immediately
+    checkSession();
+    console.log(
+      `--- Polling session validity 2 | expiresIn: ${expiresIn} s | POLL_INTERVAL_S: ${POLL_INTERVAL_S} s | ${new Date().toLocaleString()} ---`,
+    );
+    if (expiresIn != null && expiresIn * 2 < POLL_INTERVAL_S) {
+      refreshToken();
+    }
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [isAuthenticated, refreshToken, checkSession, expiresIn]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    checkSession();
 
     // Layer 2: Refresh on visibility change + window focus
     const onVisibilityChange = () => {
@@ -167,12 +198,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener("focus", onFocus);
 
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onFocus);
     };
-  }, [checkSession]);
+  }, [isAuthenticated, checkSession]);
 
   return (
     <SessionContext.Provider
@@ -180,6 +209,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         isAuthenticated,
         isLoading,
         expiresIn,
+        csrfToken,
+        setCsrfToken,
         checkSession,
         signOut,
         refreshToken,
