@@ -42,12 +42,11 @@ export async function POST(req: NextRequest) {
     // Save a new session and get the session ID
     const newCsrfToken = generateCsrfToken();
 
-    // Set session and JWT expiry in minutes
-    const sessionExpiryMinutes = parseInt(
-      process.env.SESSIONEXPIRY_MINUTES || "60",
-      10,
-    );
-    const sessionExpiryMs = sessionExpiryMinutes * 60 * 1000;
+    // Set session and JWT expiry in seconds (supports both env in seconds or fallback to minutes for backward compatibility)
+    const sessionExpirySeconds = process.env.SESSIONEXPIRY_SECONDS
+      ? parseInt(process.env.SESSIONEXPIRY_SECONDS, 10)
+      : parseInt(process.env.SESSIONEXPIRY_MINUTES || "60", 10) * 60;
+    const sessionExpiryMs = sessionExpirySeconds * 1000;
 
     const sessionId = await mongoService.saveSession(
       user._id,
@@ -61,7 +60,7 @@ export async function POST(req: NextRequest) {
       { id: user._id, email: user.email, sid: sessionId },
       JWT_SECRET,
       {
-        expiresIn: `${sessionExpiryMinutes}m`,
+        expiresIn: sessionExpirySeconds,
       },
     );
 
@@ -92,7 +91,7 @@ export async function POST(req: NextRequest) {
       secure: true,
       sameSite: "strict",
       path: "/",
-      maxAge: sessionExpiryMinutes * 60, // session expiry in seconds
+      maxAge: sessionExpirySeconds, // session expiry in seconds
     });
     response.cookies.set("refreshToken", refreshToken, {
       httpOnly: true,

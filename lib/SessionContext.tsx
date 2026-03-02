@@ -23,7 +23,7 @@ interface SessionContextType {
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
 
-const POLL_INTERVAL_S = 10; // 1 minute
+const POLL_INTERVAL_S = 10; // 2 seconds
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -56,14 +56,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
     isRefreshingRef.current = true;
     refreshPromiseRef.current = (async () => {
+      const start = performance.now();
       try {
         const res = await fetch("/api/user/token/refresh", { method: "GET" });
+        const end = performance.now();
+        console.log(
+          `⏱️ /api/user/token/refresh response time: ${(end - start).toFixed(1)} ms`,
+        );
         if (res.ok) {
+          console.log(
+            `✅ Token refresh successful at ${new Date().toLocaleString()}`,
+          );
           setIsAuthenticated(true);
           const data = await res.json();
           if (data.newCsrfToken) {
             setCsrfToken(data.newCsrfToken);
           }
+          setExpiresIn(data.expiresIn ?? null);
           return true;
         }
         setIsAuthenticated(false);
@@ -146,62 +155,57 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }, [router]);
 
-  useEffect(() => {
-    if (!isAuthenticated) {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      return;
-    }
-
-    if (intervalRef.current) clearInterval(intervalRef.current);
-
-    intervalRef.current = setInterval(() => {
-      // Always check session
-
-      checkSession();
-      console.log(
-        `--- Polling session validity 1 | expiresIn: ${expiresIn} s | POLL_INTERVAL_S: ${POLL_INTERVAL_S} s | ${new Date().toLocaleString()} ---`,
-      );
-      // If token is expiring before the next interval, refresh proactively
-      if (expiresIn != null && expiresIn * 2 < POLL_INTERVAL_S) {
-        refreshToken();
-      }
-    }, POLL_INTERVAL_S * 1000);
-
-    // On mount, do the same logic immediately
-    checkSession();
+  // --- Polling helpers (not hooks) ---
+  const checkAndMaybeRefresh = useCallback(() => {
     console.log(
-      `--- Polling session validity 2 | expiresIn: ${expiresIn} s | POLL_INTERVAL_S: ${POLL_INTERVAL_S} s | ${new Date().toLocaleString()} ---`,
+      `--- Polling session validity | expiresIn: ${expiresIn} s | POLL_INTERVAL_S: ${POLL_INTERVAL_S} s | ${new Date().toLocaleString()} ---`,
     );
-    if (expiresIn != null && expiresIn * 2 < POLL_INTERVAL_S) {
+    // Add a buffer (in seconds) to refresh before expiry
+    const REFRESH_BUFFER_S = 5;
+    if (expiresIn != null && expiresIn < POLL_INTERVAL_S + REFRESH_BUFFER_S) {
+      console.log(
+        `Proactively refreshing token before expiry (expiresIn: ${expiresIn}s, buffer: ${POLL_INTERVAL_S + REFRESH_BUFFER_S}s)...`,
+      );
       refreshToken();
+    } else {
+      checkSession();
     }
+  }, [expiresIn, refreshToken, checkSession]);
 
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [isAuthenticated, refreshToken, checkSession, expiresIn]);
+  const startPolling = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    intervalRef.current = setInterval(
+      checkAndMaybeRefresh,
+      POLL_INTERVAL_S * 1000,
+    );
+  }, [checkAndMaybeRefresh]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
-
-    checkSession();
-
-    // Layer 2: Refresh on visibility change + window focus
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        checkSession();
+    let cancelled = false;
+    // Only start polling after the first session check completes and user is authenticated
+    (async () => {
+      await checkSession();
+      if (!cancelled && isAuthenticated) {
+        checkAndMaybeRefresh();
+        startPolling();
+      } else if (!isAuthenticated && intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
-    };
-    const onFocus = () => checkSession();
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", onFocus);
+    })();
 
     return () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", onFocus);
+      cancelled = true;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
     };
-  }, [isAuthenticated, checkSession]);
+    // eslint-disable-next-line
+  }, [isAuthenticated, checkAndMaybeRefresh, startPolling]);
 
   return (
     <SessionContext.Provider
